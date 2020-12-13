@@ -1,10 +1,10 @@
 {
   "name": "gatsby-transformer-remark-rehype",
   "description": "Gatsby transformer plugin for Markdown using the Remark & Rehype library and ecosystem",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "author": "Xiaodai Dai <diauweb@live.com>",
   "bugs": {
-    "url": "https://github.com/oi-wiki/gatsby-oi-wiki"
+    "url": "https://github.com/diauweb/gatsby-transformer-remark-rehype/issues"
   },
   "dependencies": {
     "@babel/runtime": "^7.11.2",
@@ -35,7 +35,7 @@
     "babel-preset-gatsby-package": "^0.5.3",
     "cross-env": "^7.0.2"
   },
-  "homepage": "https://github.com/oi-wiki/gatsby-oi-wiki/tree/master/gatsby-transformer-remark-rehype",
+  "homepage": "https://github.com/diauweb/gatsby-transformer-remark-rehype",
   "keywords": [
     "gatsby",
     "gatsby-plugin",
@@ -48,8 +48,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/oi-wiki/gatsby-oi-wiki.git",
-    "directory": "gatsby-transformer-remark-rehype"
+    "url": "https://github.com/diauweb/gatsby-transformer-remark-rehype"
   },
   "scripts": {
     "build": "babel src --out-dir . --ignore \"**/__tests__\"",
