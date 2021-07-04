@@ -14,7 +14,7 @@ const stringify = require(`remark-stringify`)
 const english = require(`retext-english`)
 const remark2retext = require(`remark-retext`)
 const stripPosition = require(`unist-util-remove-position`)
-const hastReparseRaw = require(`hast-util-raw`)
+const reparseRaw = require(`rehype-raw`)
 const prune = require(`underscore.string/prune`)
 const {
   getConcatenatedValue,
@@ -361,10 +361,20 @@ module.exports = function remarkExtendNodeType(
     }
 
     function markdownASTToHTMLAst(ast) {
-      return toHAST(ast, {
+      let hast = unified().use(reparseRaw)
+      for (let plugin of pluginOptions.rehypePlugins) {
+        if (_.isArray(plugin)) {
+          const [parser, options] = plugin
+          hast = hast.use(parser, options)
+        } else {
+          hast = hast.use(plugin)
+        }
+      }
+
+      return stripPosition(hast.runSync(toHAST(ast, {
         allowDangerousHtml: true,
         handlers: { code: codeHandler },
-      })
+      })))
     }
 
     async function getHTMLAst(markdownNode) {
@@ -573,8 +583,7 @@ module.exports = function remarkExtendNodeType(
         type: `JSON`,
         async resolve(markdownNode) {
           const ast = await getHTMLAst(markdownNode)
-          const strippedAst = stripPosition(_.clone(ast), true)
-          return hastReparseRaw(strippedAst)
+          return _.clone(ast)
         },
       },
       excerpt: {
@@ -621,8 +630,7 @@ module.exports = function remarkExtendNodeType(
             truncate,
             excerptSeparator: pluginOptions.excerpt_separator,
           })
-          const strippedAst = stripPosition(_.clone(ast), true)
-          return hastReparseRaw(strippedAst)
+          return _.clone(ast)
         },
       },
       headings: {
