@@ -1,29 +1,29 @@
 const Remark = require(`remark`)
-const select = require(`unist-util-select`)
+const { selectAll } = require(`unist-util-select`)
 const _ = require(`lodash`)
 const visit = require(`unist-util-visit`)
 const toHAST = require(`mdast-util-to-hast`)
 const hastToHTML = require(`hast-util-to-html`)
+const mdastToToc = require(`mdast-util-toc`)
 const mdastToString = require(`mdast-util-to-string`)
-const Promise = require(`bluebird`)
 const unified = require(`unified`)
 const parse = require(`remark-parse`)
+const remarkGfm = require(`remark-gfm`)
+const remarkFootnotes = require(`remark-footnotes`)
 const stringify = require(`remark-stringify`)
 const english = require(`retext-english`)
 const remark2retext = require(`remark-retext`)
 const stripPosition = require(`unist-util-remove-position`)
-const reparseRaw = require(`rehype-raw`)
+const hastReparseRaw = require(`hast-util-raw`)
 const prune = require(`underscore.string/prune`)
 const {
   getConcatenatedValue,
   cloneTreeUntil,
   findLastTextNode,
 } = require(`./hast-processing`)
+const codeHandler = require(`./code-handler`)
 const { getHeadingID } = require(`./utils/get-heading-id`)
 const { timeToRead } = require(`./utils/time-to-read`)
-const detab = require('detab')
-const u = require('unist-builder')
-const genToc = require('./utils/gen-toc')
 
 let fileNodes
 let pluginsCacheStr = ``
@@ -36,8 +36,9 @@ const htmlAstCacheKey = node =>
   `transformer-remark-markdown-html-ast-${node.internal.contentDigest}-${pluginsCacheStr}-${pathPrefixCacheStr}`
 const headingsCacheKey = node =>
   `transformer-remark-markdown-headings-${node.internal.contentDigest}-${pluginsCacheStr}-${pathPrefixCacheStr}`
-const tocObjectCacheKey = (node, appliedTocOptions) =>
-  `transformer-remark-markdown-tocObject-${node.internal.contentDigest
+const tableOfContentsCacheKey = (node, appliedTocOptions) =>
+  `transformer-remark-markdown-toc-${
+    node.internal.contentDigest
   }-${pluginsCacheStr}-${JSON.stringify(
     appliedTocOptions
   )}-${pathPrefixCacheStr}`
@@ -45,14 +46,6 @@ const tocObjectCacheKey = (node, appliedTocOptions) =>
 // ensure only one `/` in new url
 const withPathPrefix = (url, pathPrefix) =>
   (pathPrefix + url).replace(/\/\//, `/`)
-
-// TODO: remove this check with next major release
-const safeGetCache = ({ getCache, cache }) => id => {
-  if (!getCache) {
-    return cache
-  }
-  return getCache(id)
-}
 
 /**
  * Map that keeps track of generation of AST to not generate it multiple
@@ -80,53 +73,59 @@ const headingLevels = [...Array(6).keys()].reduce((acc, i) => {
   return acc
 }, {})
 
-module.exports = (
+module.exports = function remarkExtendNodeType(
   {
     type,
     basePath,
     getNode,
     getNodesByType,
     cache,
-    getCache: possibleGetCache,
+    getCache,
     reporter,
     ...rest
   },
   pluginOptions
-) => {
+) {
   if (type.name !== `MarkdownRemark`) {
     return {}
   }
   pluginsCacheStr = pluginOptions.plugins.map(p => p.name).join(``)
   pathPrefixCacheStr = basePath || ``
 
-  const getCache = safeGetCache({ cache, getCache: possibleGetCache })
-
   return new Promise((resolve, reject) => {
     // Setup Remark.
     const {
       blocks,
-      commonmark = true,
       footnotes = true,
       gfm = true,
-      pedantic = true,
-      remarkPlugins = [],
-      rehypePlugins = [],
+      tableOfContents = {
+        heading: null,
+        maxDepth: 6,
+      },
     } = pluginOptions
-    const remarkOptions = {
-      commonmark,
-      footnotes,
-      gfm,
-      pedantic,
-    }
+    const tocOptions = tableOfContents
+    const remarkOptions = {}
+
     if (_.isArray(blocks)) {
       remarkOptions.blocks = blocks
     }
+
     let remark = new Remark().data(`settings`, remarkOptions)
 
-    for (let plugin of pluginOptions.plugins) {
+    if (gfm) {
+      // TODO: deprecate `gfm` option in favor of explicit remark-gfm as a plugin?
+      remark = remark.use(remarkGfm)
+    }
+
+    if (footnotes) {
+      // TODO: deprecate `footnotes` option in favor of explicit remark-footnotes as a plugin?
+      remark = remark.use(remarkFootnotes, { inlineNotes: true })
+    }
+
+    for (const plugin of pluginOptions.plugins) {
       const requiredPlugin = require(plugin.resolve)
       if (_.isFunction(requiredPlugin.setParserPlugins)) {
-        for (let parserPlugin of requiredPlugin.setParserPlugins(
+        for (const parserPlugin of requiredPlugin.setParserPlugins(
           plugin.pluginOptions
         )) {
           if (_.isArray(parserPlugin)) {
@@ -139,41 +138,37 @@ module.exports = (
       }
     }
 
-    for (let plugin of remarkPlugins) {
-      if (_.isArray(plugin)) {
-        const [parser, options] = plugin
-        remark = remark.use(parser, options)
-      } else {
-        remark = remark.use(plugin)
-      }
-    }
-
     async function getAST(markdownNode) {
       const cacheKey = astCacheKey(markdownNode)
+
+      const promise = ASTPromiseMap.get(cacheKey)
+      if (promise) {
+        // We are already generating AST, so let's wait for it
+        return promise
+      }
+
       const cachedAST = await cache.get(cacheKey)
       if (cachedAST) {
         return cachedAST
-      } else if (ASTPromiseMap.has(cacheKey)) {
-        // We are already generating AST, so let's wait for it
-        return await ASTPromiseMap.get(cacheKey)
-      } else {
-        const ASTGenerationPromise = getMarkdownAST(markdownNode)
-        ASTGenerationPromise.then(markdownAST => {
-          ASTPromiseMap.delete(cacheKey)
-          return cache.set(cacheKey, markdownAST)
-        }).catch(err => {
-          ASTPromiseMap.delete(cacheKey)
-          return err
-        })
-        // Save new AST to cache and return
-        // We can now release promise, as we cached result
-        ASTPromiseMap.set(cacheKey, ASTGenerationPromise)
-        return ASTGenerationPromise
+      }
+
+      const ASTGenerationPromise = getMarkdownAST(markdownNode)
+      ASTPromiseMap.set(cacheKey, ASTGenerationPromise)
+
+      // Return the promise that will cache the result if good, and deletes the promise from local cache either way
+      // Note that if this cache hits for another parse, it won't have to wait for the cache
+      try {
+        const markdownAST = await ASTGenerationPromise
+
+        await cache.set(cacheKey, markdownAST)
+
+        return markdownAST
+      } finally {
+        ASTPromiseMap.delete(cacheKey)
       }
     }
 
-    // Parse a markdown string and its AST representation,
-    // applying the remark plugins if necesserary
+    // Parse a markdown string and its AST representation, applying the remark plugins if necessary
     async function parseString(string, markdownNode) {
       // compiler to inject in the remark plugins
       // so that they can use our parser/generator
@@ -182,10 +177,11 @@ module.exports = (
         parseString: string => parseString(string, markdownNode),
         generateHTML: ast =>
           hastToHTML(markdownASTToHTMLAst(ast), {
-            allowDangerousHTML: true,
+            allowDangerousHtml: true,
           }),
       }
-      let markdownAST = remark.parse(string)
+
+      const markdownAST = remark.parse(string)
 
       if (basePath) {
         // Ensure relative links include `pathPrefix`
@@ -203,22 +199,23 @@ module.exports = (
       if (process.env.NODE_ENV !== `production` || !fileNodes) {
         fileNodes = getNodesByType(`File`)
       }
-      // Use Bluebird's Promise function "each" to run remark plugins serially.
-      await Promise.each(pluginOptions.plugins, plugin => {
+      // Use a for loop to run remark plugins serially.
+      for (const plugin of pluginOptions.plugins) {
         const requiredPlugin = require(plugin.resolve)
         // Allow both exports = function(), and exports.default = function()
         const defaultFunction = _.isFunction(requiredPlugin)
           ? requiredPlugin
           : _.isFunction(requiredPlugin.default)
-            ? requiredPlugin.default
-            : undefined
+          ? requiredPlugin.default
+          : undefined
 
         if (defaultFunction) {
-          return defaultFunction(
+          await defaultFunction(
             {
               markdownAST,
               markdownNode,
               getNode,
+              getNodesByType,
               files: fileNodes,
               basePath,
               reporter,
@@ -229,12 +226,9 @@ module.exports = (
             },
             plugin.pluginOptions
           )
-        } else {
-          return Promise.resolve()
         }
-      })
+      }
 
-      markdownAST = await remark.run(markdownAST)
       return markdownAST
     }
 
@@ -246,11 +240,11 @@ module.exports = (
       // Execute the remark plugins that can mutate the node
       // before parsing its content
       //
-      // Use Bluebird's Promise function "each" to run remark plugins serially.
-      await Promise.each(pluginOptions.plugins, plugin => {
+      // Use for loop to run remark plugins serially.
+      for (const plugin of pluginOptions.plugins) {
         const requiredPlugin = require(plugin.resolve)
-        if (_.isFunction(requiredPlugin.mutateSource)) {
-          return requiredPlugin.mutateSource(
+        if (typeof requiredPlugin.mutateSource === `function`) {
+          await requiredPlugin.mutateSource(
             {
               markdownNode,
               files: fileNodes,
@@ -262,133 +256,118 @@ module.exports = (
             },
             plugin.pluginOptions
           )
-        } else {
-          return Promise.resolve()
         }
-      })
+      }
 
       return parseString(markdownNode.internal.content, markdownNode)
     }
 
     async function getHeadings(markdownNode) {
-      const cachedHeadings = await cache.get(headingsCacheKey(markdownNode))
+      const markdownCacheKey = headingsCacheKey(markdownNode)
+      const cachedHeadings = await cache.get(markdownCacheKey)
       if (cachedHeadings) {
         return cachedHeadings
-      } else {
-        const ast = await getAST(markdownNode)
-        const headings = select(ast, `heading`).map(heading => {
-          return {
-            id: getHeadingID(heading),
-            value: mdastToString(heading),
-            depth: heading.depth,
-          }
-        })
-
-        cache.set(headingsCacheKey(markdownNode), headings)
-        return headings
       }
+
+      const ast = await getAST(markdownNode)
+      const headings = selectAll(`heading`, ast).map(heading => {
+        return {
+          id: getHeadingID(heading),
+          value: mdastToString(heading),
+          depth: heading.depth,
+        }
+      })
+
+      await cache.set(markdownCacheKey, headings)
+      return headings
     }
 
-    async function getTocObject(markdownNode, gqlTocOptions) {
-      const cachedToc = await cache.get(
-        tocObjectCacheKey(markdownNode, gqlTocOptions)
-      )
+    function addSlugToUrl(markdownNode, slugField, appliedTocOptions, node) {
+      if (node.url) {
+        if (slugField === undefined) {
+          console.warn(
+            `Skipping TableOfContents. Field '${appliedTocOptions.pathToSlugField}' missing from markdown node`
+          )
+          return null
+        }
 
+        node.url = [basePath, slugField, node.url]
+          .join(`/`)
+          .replace(/\/\//g, `/`)
+      }
+
+      if (node.children) {
+        node.children = node.children
+          .map(node =>
+            addSlugToUrl(markdownNode, slugField, appliedTocOptions, node)
+          )
+          .filter(Boolean)
+      }
+
+      return node
+    }
+
+    async function getTableOfContents(markdownNode, gqlTocOptions) {
+      // fetch defaults
+      const appliedTocOptions = { ...tocOptions, ...gqlTocOptions }
+
+      const tocKey = tableOfContentsCacheKey(markdownNode, appliedTocOptions)
+
+      // get cached toc
+      const cachedToc = await cache.get(tocKey)
       if (cachedToc) {
         return cachedToc
-      } else {
-        const obj = genToc(await getHTMLAst(markdownNode))
-        cache.set(tocObjectCacheKey(markdownNode, gqlTocOptions), obj)
-        return obj
       }
-    }
 
-    const hastHandlers = {
-      // `inlineCode` gets passed as `code` by the HAST transform.
-      // This makes sure it ends up being `inlineCode`
-      inlineCode(h, node) {
-        return Object.assign({}, node, {
-          type: 'element',
-          tagName: 'inlineCode',
-          properties: {},
-          children: [
-            {
-              type: 'text',
-              value: node.value
-            }
-          ]
-        })
-      },
-      code(h, node) {
-        const value = node.value ? detab(node.value + '\n') : ''
-        const lang = node.lang
-        const props = {}
+      const ast = await getAST(markdownNode, cache)
+      const tocAst = mdastToToc(ast, appliedTocOptions)
 
-        if (lang) {
-          props.className = ['language-' + lang]
+      let toc = ``
+      if (tocAst.map) {
+        if (appliedTocOptions.absolute) {
+          const slugField = _.get(
+            markdownNode,
+            appliedTocOptions.pathToSlugField
+          )
+
+          tocAst.map = addSlugToUrl(
+            markdownNode,
+            slugField,
+            appliedTocOptions,
+            tocAst.map
+          )
         }
 
-        // MDAST sets `node.meta` to `null` instead of `undefined` if
-        // not present, which React doesn't like.
-        props.metastring = node.meta || undefined
-
-        const meta =
-          node.meta &&
-          node.meta.split(' ').reduce((acc, cur) => {
-            if (cur.split('=').length > 1) {
-              const t = cur.split('=')
-              acc[t[0]] = t[1]
-              return acc
-            }
-
-            acc[cur] = true
-            return acc
-          }, {})
-
-        if (meta) {
-          Object.keys(meta).forEach(key => {
-            const isClassKey = key === 'class' || key === 'className'
-            if (props.className && isClassKey) {
-              props.className.push(meta[key])
-            } else {
-              props[key] = meta[key]
-            }
+        // addSlugToUrl may clear the map
+        if (tocAst.map) {
+          toc = hastToHTML(toHAST(tocAst.map, { allowDangerousHtml: true }), {
+            allowDangerousHtml: true,
           })
         }
+      }
 
-        return h(node.position, 'pre', [
-          h(node, 'code', props, [u('text', value)])
-        ])
-      },
+      await cache.set(tocKey, toc)
+      return toc
     }
 
     function markdownASTToHTMLAst(ast) {
-      let hast = unified().use(reparseRaw)
-      for (let plugin of rehypePlugins) {
-        if (_.isArray(plugin)) {
-          const [parser, options] = plugin
-          hast = hast.use(parser, options)
-        } else {
-          hast = hast.use(plugin)
-        }
-      }
-      // whoops! 
-      return stripPosition(hast.runSync(toHAST(ast, {
-        allowDangerousHTML: true,
-        handlers: hastHandlers,
-      })))
+      return toHAST(ast, {
+        allowDangerousHtml: true,
+        handlers: { code: codeHandler },
+      })
     }
 
     async function getHTMLAst(markdownNode) {
-      const cachedAst = await cache.get(htmlAstCacheKey(markdownNode))
+      const key = htmlAstCacheKey(markdownNode)
+      const cachedAst = await cache.get(key)
       if (cachedAst) {
         return cachedAst
       } else {
-        const ast = await getAST(markdownNode)
+        const ast = await getAST(markdownNode, cache)
         const htmlAst = markdownASTToHTMLAst(ast)
 
         // Save new HTML AST to cache and return
-        cache.set(htmlAstCacheKey(markdownNode), htmlAst)
+        await cache.set(key, htmlAst)
         return htmlAst
       }
     }
@@ -401,11 +380,11 @@ module.exports = (
         const ast = await getHTMLAst(markdownNode)
         // Save new HTML to cache and return
         const html = hastToHTML(ast, {
-          allowDangerousHTML: true,
+          allowDangerousHtml: true,
         })
 
         // Save new HTML to cache
-        cache.set(htmlCacheKey(markdownNode), html)
+        await cache.set(htmlCacheKey(markdownNode), html)
 
         return html
       }
@@ -423,6 +402,7 @@ module.exports = (
             nextNode.type === `raw` && nextNode.value === excerptSeparator
         )
       }
+
       if (!fullAST.children.length) {
         return fullAST
       }
@@ -432,6 +412,7 @@ module.exports = (
         return totalExcerptSoFar && totalExcerptSoFar.length > pruneLength
       })
       const unprunedExcerpt = getConcatenatedValue(excerptAST)
+
       if (
         !unprunedExcerpt ||
         (pruneLength && unprunedExcerpt.length < pruneLength)
@@ -455,6 +436,7 @@ module.exports = (
           omission: `…`,
         })
       }
+
       return excerptAST
     }
 
@@ -470,10 +452,10 @@ module.exports = (
         truncate,
         excerptSeparator,
       })
-      const html = hastToHTML(excerptAST, {
-        allowDangerousHTML: true,
+
+      return hastToHTML(excerptAST, {
+        allowDangerousHtml: true,
       })
-      return html
     }
 
     async function getExcerptMarkdown(
@@ -486,14 +468,15 @@ module.exports = (
       if (excerptSeparator && markdownNode.excerpt !== ``) {
         return markdownNode.excerpt
       }
+
       const ast = await getMarkdownAST(markdownNode)
       const excerptAST = await getExcerptAst(ast, markdownNode, {
         pruneLength,
         truncate,
         excerptSeparator,
       })
-      var excerptMarkdown = unified().use(stringify).stringify(excerptAST)
-      return excerptMarkdown
+
+      return unified().use(stringify).stringify(excerptAST)
     }
 
     async function getExcerptPlain(
@@ -502,40 +485,41 @@ module.exports = (
       truncate,
       excerptSeparator
     ) {
-      const text = await getAST(markdownNode).then(ast => {
-        const excerptNodes = []
-        let isBeforeSeparator = true
-        visit(
-          ast,
-          node => isBeforeSeparator,
-          node => {
-            if (excerptSeparator && node.value === excerptSeparator) {
-              isBeforeSeparator = false
-            } else if (node.type === `text` || node.type === `inlineCode`) {
-              excerptNodes.push(node.value)
-            } else if (node.type === `image`) {
-              excerptNodes.push(node.alt)
-            } else if (SpaceMarkdownNodeTypesSet.has(node.type)) {
-              // Add a space when encountering one of these node types.
-              excerptNodes.push(` `)
-            }
+      const ast = await getAST(markdownNode)
+
+      const excerptNodes = []
+      let isBeforeSeparator = true
+      visit(
+        ast,
+        node => isBeforeSeparator,
+        node => {
+          if (excerptSeparator && node.value === excerptSeparator) {
+            isBeforeSeparator = false
+          } else if (node.type === `text` || node.type === `inlineCode`) {
+            excerptNodes.push(node.value)
+          } else if (node.type === `image`) {
+            excerptNodes.push(node.alt)
+          } else if (SpaceMarkdownNodeTypesSet.has(node.type)) {
+            // Add a space when encountering one of these node types.
+            excerptNodes.push(` `)
           }
-        )
-
-        const excerptText = excerptNodes.join(``).trim()
-
-        if (excerptSeparator && !isBeforeSeparator) {
-          return excerptText
         }
-        if (!truncate) {
-          return prune(excerptText, pruneLength, `…`)
-        }
-        return _.truncate(excerptText, {
-          length: pruneLength,
-          omission: `…`,
-        })
+      )
+
+      const excerptText = excerptNodes.join(``).trim()
+
+      if (excerptSeparator && !isBeforeSeparator) {
+        return excerptText
+      }
+
+      if (!truncate) {
+        return prune(excerptText, pruneLength, `…`)
+      }
+
+      return _.truncate(excerptText, {
+        length: pruneLength,
+        omission: `…`,
       })
-      return text
     }
 
     async function getExcerpt(
@@ -549,7 +533,9 @@ module.exports = (
           truncate,
           excerptSeparator
         )
-      } else if (format === `MARKDOWN`) {
+      }
+
+      if (format === `MARKDOWN`) {
         return getExcerptMarkdown(
           markdownNode,
           pruneLength,
@@ -557,6 +543,7 @@ module.exports = (
           excerptSeparator
         )
       }
+
       return getExcerptPlain(
         markdownNode,
         pruneLength,
@@ -568,19 +555,16 @@ module.exports = (
     return resolve({
       html: {
         type: `String`,
-        resolve(markdownNode) {
+        async resolve(markdownNode) {
           return getHTML(markdownNode)
         },
       },
       htmlAst: {
         type: `JSON`,
-        resolve(markdownNode) {
-          return getHTMLAst(markdownNode)
-
-          // return getHTMLAst(markdownNode).then(ast => {
-          //  const strippedAst = stripPosition(_.clone(ast), true)
-          //  return hastReparseRaw(strippedAst)
-          // })
+        async resolve(markdownNode) {
+          const ast = await getHTMLAst(markdownNode)
+          const strippedAst = stripPosition(_.clone(ast), true)
+          return hastReparseRaw(strippedAst)
         },
       },
       excerpt: {
@@ -620,19 +604,15 @@ module.exports = (
             defaultValue: false,
           },
         },
-        resolve(markdownNode, { pruneLength, truncate }) {
-          return getHTMLAst(markdownNode)
-            .then(fullAST =>
-              getExcerptAst(fullAST, markdownNode, {
-                pruneLength,
-                truncate,
-                excerptSeparator: pluginOptions.excerpt_separator,
-              })
-            )
-            // .then(ast => {
-            //   const strippedAst = stripPosition(_.clone(ast), true)
-            //   return hastReparseRaw(strippedAst)
-            // })
+        async resolve(markdownNode, { pruneLength, truncate }) {
+          const fullAST = await getHTMLAst(markdownNode)
+          const ast = await getExcerptAst(fullAST, markdownNode, {
+            pruneLength,
+            truncate,
+            excerptSeparator: pluginOptions.excerpt_separator,
+          })
+          const strippedAst = stripPosition(_.clone(ast), true)
+          return hastReparseRaw(strippedAst)
         },
       },
       headings: {
@@ -640,35 +620,45 @@ module.exports = (
         args: {
           depth: `MarkdownHeadingLevels`,
         },
-        resolve(markdownNode, { depth }) {
-          return getHeadings(markdownNode).then(headings => {
-            const level = depth && headingLevels[depth]
-            if (typeof level === `number`) {
-              headings = headings.filter(heading => heading.depth === level)
-            }
-            return headings
-          })
+        async resolve(markdownNode, { depth }) {
+          let headings = await getHeadings(markdownNode)
+          const level = depth && headingLevels[depth]
+          if (typeof level === `number`) {
+            headings = headings.filter(heading => heading.depth === level)
+          }
+          return headings
         },
       },
       timeToRead: {
         type: `Int`,
-        resolve(markdownNode) {
-          return getHTML(markdownNode).then(timeToRead)
+        async resolve(markdownNode) {
+          const r = await getHTML(markdownNode)
+          return timeToRead(r)
         },
       },
-      tocObject: {
-        type: `JSON`,
-        // todo: fill in args
-        args: {},
+      tableOfContents: {
+        type: `String`,
+        args: {
+          absolute: {
+            type: `Boolean`,
+            defaultValue: false,
+          },
+          pathToSlugField: {
+            type: `String`,
+            defaultValue: ``,
+          },
+          maxDepth: `Int`,
+          heading: `String`,
+        },
         resolve(markdownNode, args) {
-          return getTocObject(markdownNode, args)
-        }
+          return getTableOfContents(markdownNode, args)
+        },
       },
       // TODO add support for non-latin languages https://github.com/wooorm/remark/issues/251#issuecomment-296731071
       wordCount: {
         type: `MarkdownWordCount`,
         resolve(markdownNode) {
-          let counts = {}
+          const counts = {}
 
           unified()
             .use(parse)
