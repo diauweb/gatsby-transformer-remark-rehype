@@ -23,6 +23,7 @@
     "remark-parse": "^9.0.0",
     "remark-retext": "^4.0.0",
     "remark-stringify": "^9.0.1",
+    "replace-ext": "^2.0.0",
     "retext-english": "^3.0.4",
     "sanitize-html": "^1.27.5",
     "underscore.string": "^3.3.5",
