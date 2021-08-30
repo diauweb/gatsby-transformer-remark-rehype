@@ -1,7 +1,7 @@
 {
   "name": "gatsby-transformer-remark-rehype",
   "description": "Gatsby transformer plugin for Markdown using the Remark & Rehype library and ecosystem",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "author": "Xiaodai Dai <diauweb@live.com>",
   "bugs": {
     "url": "https://github.com/diauweb/gatsby-transformer-remark-rehype/issues"
@@ -17,6 +17,7 @@
     "mdast-util-to-hast": "^3.0.4",
     "mdast-util-to-string": "^1.1.0",
     "mdast-util-toc": "^5.0",
+    "rehype-raw": "^5.1.0",
     "remark": "^10.0.1",
     "remark-parse": "^6.0.3",
     "remark-retext": "^3.1.3",
