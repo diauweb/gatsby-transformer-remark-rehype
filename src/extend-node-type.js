@@ -2,7 +2,7 @@ const esmRequire = require('./esmRequire')
 
 const Remark = esmRequire(`remark`).remark
 const { selectAll } = esmRequire(`unist-util-select`)
-const _ = esmRequire(`lodash`)
+const _ = require(`lodash`)
 const visit = esmRequire(`unist-util-visit`).visit
 const toHAST = esmRequire(`mdast-util-to-hast`).toHast
 const hastToHTML = esmRequire(`hast-util-to-html`).ToHtml
@@ -22,10 +22,10 @@ const {
   getConcatenatedValue,
   cloneTreeUntil,
   findLastTextNode,
-} = esmRequire(`./hast-processing`)
+} = require(`./hast-processing`)
 const codeHandler = esmRequire(`./code-handler`)
-const { getHeadingID } = esmRequire(`./utils/get-heading-id`)
-const { timeToRead } = esmRequire(`./utils/time-to-read`)
+const { getHeadingID } = require(`./utils/get-heading-id`)
+const { timeToRead } = require(`./utils/time-to-read`)
 
 let fileNodes
 let pluginsCacheStr = ``
@@ -125,7 +125,7 @@ module.exports = function remarkExtendNodeType(
     }
 
     for (const plugin of pluginOptions.plugins) {
-      const requiredPlugin = esmRequire(plugin.resolve)
+      const requiredPlugin = require(plugin.resolve)
       if (_.isFunction(requiredPlugin.setParserPlugins)) {
         for (const parserPlugin of requiredPlugin.setParserPlugins(
           plugin.pluginOptions
@@ -212,7 +212,7 @@ module.exports = function remarkExtendNodeType(
       }
       // Use a for loop to run remark plugins serially.
       for (const plugin of pluginOptions.plugins) {
-        const requiredPlugin = esmRequire(plugin.resolve)
+        const requiredPlugin = require(plugin.resolve)
         // Allow both exports = function(), and exports.default = function()
         const defaultFunction = _.isFunction(requiredPlugin)
           ? requiredPlugin
