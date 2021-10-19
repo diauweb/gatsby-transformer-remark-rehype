@@ -1,27 +1,29 @@
-const Remark = require(`remark`)
-const { selectAll } = require(`unist-util-select`)
+const esmRequire = require('./esmRequire')
+
+const Remark = esmRequire(`remark`).remark
+const { selectAll } = esmRequire(`unist-util-select`)
 const _ = require(`lodash`)
-const visit = require(`unist-util-visit`)
-const toHAST = require(`mdast-util-to-hast`)
-const hastToHTML = require(`hast-util-to-html`)
-const mdastToToc = require(`mdast-util-toc`)
-const mdastToString = require(`mdast-util-to-string`)
-const unified = require(`unified`)
-const parse = require(`remark-parse`)
-const remarkGfm = require(`remark-gfm`)
-const remarkFootnotes = require(`remark-footnotes`)
-const stringify = require(`remark-stringify`)
-const english = require(`retext-english`)
-const remark2retext = require(`remark-retext`)
-const stripPosition = require(`unist-util-remove-position`)
-const reparseRaw = require(`rehype-raw`)
+const visit = esmRequire(`unist-util-visit`).visit
+const toHAST = esmRequire(`mdast-util-to-hast`).toHast
+const hastToHTML = esmRequire(`hast-util-to-html`).ToHtml
+const mdastToToc = esmRequire(`mdast-util-toc`).toc
+const mdastToString = esmRequire(`mdast-util-to-string`).toString
+const unified = esmRequire(`unified`).unified
+const parse = esmRequire(`remark-parse`).default
+const remarkGfm = esmRequire(`remark-gfm`).default
+const remarkFootnotes = esmRequire(`remark-footnotes`).default
+const stringify = esmRequire(`remark-stringify`).default
+const english = esmRequire(`retext-english`).default
+const remark2retext = esmRequire(`remark-retext`).default
+const stripPosition = esmRequire(`unist-util-remove-position`).removePosition
+const reparseRaw = esmRequire(`rehype-raw`).default
 const prune = require(`underscore.string/prune`)
 const {
   getConcatenatedValue,
   cloneTreeUntil,
   findLastTextNode,
 } = require(`./hast-processing`)
-const codeHandler = require(`./code-handler`)
+const codeHandler = esmRequire(`./code-handler`)
 const { getHeadingID } = require(`./utils/get-heading-id`)
 const { timeToRead } = require(`./utils/time-to-read`)
 
@@ -252,7 +254,7 @@ module.exports = function remarkExtendNodeType(
       //
       // Use for loop to run remark plugins serially.
       for (const plugin of pluginOptions.plugins) {
-        const requiredPlugin = require(plugin.resolve)
+        const requiredPlugin = esmRequire(plugin.resolve)
         if (typeof requiredPlugin.mutateSource === `function`) {
           await requiredPlugin.mutateSource(
             {
