@@ -14,7 +14,7 @@ This package is a mod of [gatsby-transformer-remark](https://www.npmjs.com/packa
 // In your gatsby-config.js
 plugins: [
   {
-    resolve: `gatsby-transformer-remark`,
+    resolve: `gatsby-transformer-remark-rehype`,
     options: {
       // Footnotes mode (default: true)
       footnotes: true,
